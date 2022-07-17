@@ -51,7 +51,7 @@ def make_config():
     cfg.test.split = 0
     cfg.test.pairs_path = "/share_data/PVEN-master/samecar"
     cfg.test.q_dir = "/share_data/PVEN-master/sip_data/image_query"
-    cfg.test.g_idr = "/share_data/PVEN-master/sip_data/image_test"
+    cfg.test.g_dir = "/share_data/PVEN-master/sip_data/image_test"
 
     cfg.logging = CfgNode()
     cfg.logging.level = "info"
@@ -98,4 +98,81 @@ def main():
 
     model.load_state_dict(state_dict, strict=False)
     logger.info(f"Load model {cfg.test.model_path}")
+    #在这里将成对的图片，一张放到query中，一张放入test中
+    allplateList = os.listdir(cfg.test.pairs_path)
+    for ap in tqdm(allplateList):
+        platedir = os.path.join(cfg.test.pairs_path, ap)
+        platesList = os.listdir(platedir)  #不同视频
+        for p in platesList:
+            picsdir = os.path.join(platedir, p)
+            picsList = os.listdir(picsdir)
+            pic1_name = picsList.pop(0)
+            pic2_name = picsList.pop(0)
+            pic1_dir = os.path.join(picsdir, pic1_name)
+            pic2_dir = os.path.join(picsdir, pic2_name)
+            shutil.copy(pic1_dir, cfg.test.q_dir)
+            shutil.copy(pic2_dir, cfg.test.g_dir)
+            pic1_path = os.path.join(cfg.test.q_dir, pic1_name)
+            pic2_path = os.path.join(cfg.test.p_dir, pic2_name)
 
+            pic1 = cv2.imread(pic1_path)
+            pic2 = cv2.imread(pic2_path)
+
+            pic1 = cv2.cvtColor(pic1, cv2.COLOR_BGR2RGB)
+            pic2 = cv2.cvtColor(pic2, cv2.COLOR_BGR2RGB)
+
+            pic1 = cv2.resize(pic1, (256, 256))
+            pic2 = cv2.resize(pic2, (256, 256))
+
+            transf = transforms.Compose([
+                        transforms.ToTensor(),
+                        transforms.ToTensor(mean = [0.5, 0.5, 0.5],
+                                            std = [0.5, 0.5, 0.5])
+                                        ])
+
+            img1 = transf(pic1).cuda()
+            img2 = transf(pic2).cuda()
+
+            img1 = img1.view(1, *img1.size())
+            img2 = img2.view(1, *img2.size())
+
+            model.eval()
+            with torch.no_grad():
+                img1 = torch.cuda.FloatTensor(img1)
+                img2 = torch.cuda.FloatTensor(img2)
+
+                out1 = model(img1)
+                out2 = model(img2)
+
+            global_feat1 = out1["global_feat"]
+            global_feat2 = out2["global_feat"]
+
+            global_feat1 = F.normalize(global_feat1, dim=1, p=2)
+            global_feat2 = F.normalize(global_feat2, dim=1, p=2)
+
+            global_feat1 = global_feat1.detach().cpu()
+            global_feat2 = global_feat2.detach().cpu()
+
+            dismat = cosine_distance(global_feat1, global_feat2)
+            print("dist:", dismat)
+            if not os.path.exists("tsame.txt"):
+                f = open("tsame.txt", "w")
+            else:
+                f = open("tsame.txt", "a")
+
+            if pic1_name.split("_")[0] == pic2_name.split("_")[0]:
+                issame = 1
+            else:
+                issame = 0
+
+            test_str = str(issame) + " " + pic1_name + " " + pic2_name + " " + str(dismat[0][0]) + "\r\n"
+            f.write(test_str)
+            f.close()
+
+            #计算一次后， 就将q与p删掉
+            os.remove(pic1_path)
+            os.remove(pic2_path)
+
+
+        if __name__ == "__main__":
+            main()
